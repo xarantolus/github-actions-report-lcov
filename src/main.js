@@ -1,4 +1,4 @@
-const {DefaultArtifactClient} = require('@actions/artifact');
+const { DefaultArtifactClient } = require('@actions/artifact');
 const core = require('@actions/core');
 const exec = require('@actions/exec');
 const github = require('@actions/github');
@@ -18,34 +18,55 @@ async function run() {
     const titlePrefix = core.getInput('title-prefix');
     const additionalMessage = core.getInput('additional-message');
     const updateComment = core.getInput('update-comment') === 'true';
+    const coverageArtifactName = core.getInput('coverage-artifact-name');
 
     await genhtml(coverageFiles, tmpPath);
 
     const coverageFile = await mergeCoverages(coverageFiles, tmpPath);
     const totalCoverage = lcovTotal(coverageFile);
-    const minimumCoverage = core.getInput('minimum-coverage');
     const gitHubToken = core.getInput('github-token').trim();
+    const minimumCoverage = core.getInput('minimum-coverage');
     const errorMessage = `The code coverage is too low: ${totalCoverage}. Expected at least ${minimumCoverage}.`;
     const isMinimumCoverageReached = totalCoverage >= minimumCoverage;
 
     const hasGithubToken = gitHubToken !== '';
     const isPR = events.includes(github.context.eventName);
 
+    const octokit = await github.getOctokit(gitHubToken);
     if (hasGithubToken && isPR) {
-      const octokit = await github.getOctokit(gitHubToken);
       const summary = await summarize(coverageFile);
       const details = await detail(coverageFile, octokit);
+      const previousCoverage = await calculatePreviousCoverage(octokit, coverageArtifactName, gitHubToken, tmpPath);
       const sha = github.context.payload.pull_request.head.sha;
       const shaShort = sha.substr(0, 7);
       const commentHeaderPrefix = `### ${titlePrefix ? `${titlePrefix} ` : ''}[LCOV](https://github.com/marketplace/actions/report-lcov) of commit`;
-      let body = `${commentHeaderPrefix} [<code>${shaShort}</code>](${github.context.payload.pull_request.number}/commits/${sha}) during [${github.context.workflow} #${github.context.runNumber}](../actions/runs/${github.context.runId})\n<pre>${summary}\n\nFiles changed coverage rate:${details}</pre>${additionalMessage ? `\n${additionalMessage}` : ''}`;
+
+      let diffMessage = '';
+      if (previousCoverage !== null) {
+        const compareUrl = `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/compare/${previousCoverage.targetBranchSha}...${sha}`;
+        const diff = totalCoverage - previousCoverage.coverage;
+        const diffRounded = diff.toFixed(2);
+        const sign = diff > 0 ? '+' : '-';
+        diffMessage = `This pull request changes total coverage ${sign}${diffRounded}% (${previousCoverage.coverage.toFixed(2)}% -> ${totalCoverage.toFixed(2)}%) for this [diff](${compareUrl})`;
+      } else {
+        diffMessage = `Total coverage: ${totalCoverage.toFixed(2)}%`;
+      }
+      let body = `${commentHeaderPrefix} [<code>${shaShort}</code>](${github.context.payload.pull_request.number}/commits/${sha}) during [${github.context.workflow} #${github.context.runNumber}](../actions/runs/${github.context.runId})\n${diffMessage}\n<pre>${summary}\n\nFiles changed coverage rate:${details}</pre>${additionalMessage ? `\n${additionalMessage}` : ''}`;
 
       if (!isMinimumCoverageReached) {
         body += `\n:no_entry: ${errorMessage}`;
       }
 
       updateComment ? await upsertComment(body, commentHeaderPrefix, octokit) : await createComment(body, octokit);
-    } else if (!hasGithubToken) {
+    } else if (hasGithubToken && coverageArtifactName) {
+      // This uploaded artifact can be used for comparisons
+      await artifact
+        .uploadArtifact(
+          coverageArtifactName,
+          coverageFile,
+        );
+    }
+    else if (!hasGithubToken) {
       core.info("github-token received is empty. Skipping writing a comment in the PR.");
       core.info("Note: This could happen even if github-token was provided in workflow file. It could be because your github token does not have permissions for commenting in target repo.")
     } else if (!isPR) {
@@ -98,6 +119,86 @@ async function upsertComment(body, commentHeaderPrefix, octokit) {
     core.debug(`Comment does not exist, a new comment will be created.`);
 
     await createComment(body, octokit);
+  }
+}
+
+async function calculatePreviousCoverage(octokit, artifactName, gitHubToken, tmpPath) {
+  let coverage;
+  try {
+    coverage = await downloadTargetBranchCoverage(octokit, artifactName, gitHubToken, tmpPath);
+    if (!path) {
+      return null;
+    }
+  } catch (error) {
+    core.warning(`Error loading previous coverage: ${error.message}`);
+    return null;
+  }
+  if (!coverage) {
+    return null;
+  }
+
+  return {
+    coverage: lcovTotal(coverage.path),
+    ...coverage,
+  }
+}
+
+
+async function downloadTargetBranchCoverage(octokit, artifactName, gitHubToken, tmpPath) {
+  const pr = github.context.payload.pull_request;
+  if (!pr) {
+    core.warning("Not a pull request event. Skipping target branch coverage download.");
+    return;
+  }
+
+  // Use the PR base for the target branch.
+  const targetBranch = pr.base.ref;
+  core.info(`Searching for a successful workflow run on target branch: ${targetBranch}`);
+
+  const { owner, repo } = github.context.repo;
+  const runsResponse = await octokit.rest.actions.listWorkflowRunsForRepo({
+    owner,
+    repo,
+    branch: targetBranch,
+    per_page: 1,
+  });
+
+  if (runsResponse.data.workflow_runs.length === 0) {
+    core.warning(`No successful workflow runs found on branch "${targetBranch}".`);
+    return null;
+  }
+
+  const workflowRunId = runsResponse.data.workflow_runs[0].id;
+  core.info(`Found run id ${workflowRunId} on branch ${targetBranch}.`);
+
+  // Build the findBy object for cross-run artifact download.
+  const findBy = {
+    token: gitHubToken,
+    workflowRunId,
+    repositoryOwner: owner,
+    repositoryName: repo,
+  };
+
+  // Use actions/artifact to download the artifact.
+  const artifactClient = new DefaultArtifactClient();
+  const artifactInfo = await artifactClient.getArtifact(artifactName, { findBy });
+  if (!artifactInfo) {
+    core.warning(`No artifact found for "${artifactName}".`);
+    return;
+  }
+
+  const path = `${tmpPath}/${workflowRunId}-${artifactName}-lcov.info`;
+
+  await artifactClient.downloadArtifact(artifactInfo.id, tmpPath, {
+    findBy,
+    path: artifactName,
+  });
+
+  core.info(`Artifact "${artifactName}" downloaded to ${path}.`);
+  return {
+    path,
+    runId: workflowRunId,
+    targetBranchSha: runsResponse.data.workflow_runs[0].head_sha,
   }
 }
 
