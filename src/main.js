@@ -3,8 +3,10 @@ const core = require('@actions/core');
 const exec = require('@actions/exec');
 const github = require('@actions/github');
 const glob = require('@actions/glob');
+const { mkdirP } = require('@actions/io');
 const lcovTotal = require("lcov-total");
 const os = require('os');
+const fs = require('fs');
 const path = require('path');
 
 const events = ['pull_request', 'pull_request_target'];
@@ -192,12 +194,7 @@ async function downloadTargetBranchCoverage(octokit, artifactName, gitHubToken, 
     return;
   }
 
-  const path = `${tmpPath}/${workflowRunId}-${artifactName}-lcov.info`;
-
-  await artifactClient.downloadArtifact(artifactInfo.artifact.id, {
-    findBy,
-    path: artifactName,
-  });
+  const path = await downloadSingleFileArtifact(artifactName, findBy, `${tmpPath}/${workflowRunId}-${artifactName}-lcov.info`);
 
   core.info(`Artifact "${artifactName}" downloaded to ${path}.`);
   return {
@@ -205,6 +202,32 @@ async function downloadTargetBranchCoverage(octokit, artifactName, gitHubToken, 
     runId: workflowRunId,
     targetBranchSha: runsResponse.data.workflow_runs[0].head_sha,
   }
+}
+
+async function downloadSingleFileArtifact(artifactName, findBy, downloadDir) {
+  const artifactClient = new DefaultArtifactClient();
+  const artifactInfo = await artifactClient.getArtifact(artifactName, { findBy });
+  if (!artifactInfo) {
+    core.warning(`No artifact found for "${artifactName}".`);
+    return;
+  }
+
+  // Download the artifact to the specified downloadDir
+  await artifactClient.downloadArtifact(artifactInfo.artifact.id, {
+    findBy,
+    path: downloadDir,
+  });
+  core.info(`Artifact "${artifactName}" downloaded to ${downloadDir}.`);
+
+  // List files in the download directory
+  const files = fs.readdirSync(downloadDir);
+  if (files.length !== 1) {
+    throw new Error(`Expected a single file, but found ${files.length} files in ${downloadDir}.`);
+  }
+
+  // Get the full path of the single file
+  const fullFilePath = path.join(downloadDir, files[0]);
+  return fullFilePath;
 }
 
 async function genhtml(coverageFiles, tmpPath) {
