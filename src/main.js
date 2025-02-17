@@ -60,11 +60,11 @@ async function run() {
       updateComment ? await upsertComment(body, commentHeaderPrefix, octokit) : await createComment(body, octokit);
     } else if (hasGithubToken && coverageArtifactName) {
       // This uploaded artifact can be used for comparisons
-      await artifact
-        .uploadArtifact(
+      const artifactClient = new DefaultArtifactClient();
+      await artifactClient.uploadArtifact(
           coverageArtifactName,
           coverageFile,
-        );
+      );
     }
     else if (!hasGithubToken) {
       core.info("github-token received is empty. Skipping writing a comment in the PR.");
