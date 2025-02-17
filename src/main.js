@@ -58,20 +58,24 @@ async function run() {
       }
 
       updateComment ? await upsertComment(body, commentHeaderPrefix, octokit) : await createComment(body, octokit);
-    } else if (hasGithubToken && coverageArtifactName) {
-      // This uploaded artifact can be used for comparisons
-      const artifactClient = new DefaultArtifactClient();
-      await artifactClient.uploadArtifact(
-          coverageArtifactName,
-          coverageFile,
-      );
-    }
-    else if (!hasGithubToken) {
+    } else if (!hasGithubToken) {
       core.info("github-token received is empty. Skipping writing a comment in the PR.");
       core.info("Note: This could happen even if github-token was provided in workflow file. It could be because your github token does not have permissions for commenting in target repo.")
     } else if (!isPR) {
       core.info("The event is not a pull request. Skipping writing a comment.");
       core.info("The event type is: " + github.context.eventName);
+    }
+
+    if (hasGithubToken && coverageArtifactName) {
+      core.info("Uploading coverage artifact to the workflow run.");
+
+      const artifactClient = new DefaultArtifactClient();
+      await artifactClient.uploadArtifact(
+        coverageArtifactName,
+        coverageFile,
+      );
+    } else {
+      core.info("Skipping coverage artifact upload.");
     }
 
     core.setOutput("total-coverage", totalCoverage);
