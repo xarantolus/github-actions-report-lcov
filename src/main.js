@@ -194,7 +194,7 @@ async function downloadTargetBranchCoverage(octokit, artifactName, gitHubToken, 
 
   const path = `${tmpPath}/${workflowRunId}-${artifactName}-lcov.info`;
 
-  await artifactClient.downloadArtifact(artifactInfo.id, {
+  await artifactClient.downloadArtifact(artifactInfo.artifact.id, {
     findBy,
     path: artifactName,
   });
