@@ -72,7 +72,7 @@ async function run() {
       const artifactClient = new DefaultArtifactClient();
       await artifactClient.uploadArtifact(
         coverageArtifactName,
-        coverageFile,
+        [coverageFile]
       );
     } else {
       core.info("Skipping coverage artifact upload.");
