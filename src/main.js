@@ -48,7 +48,7 @@ async function run() {
         const compareUrl = `https://github.com/${github.context.repo.owner}/${github.context.repo.repo}/compare/${previousCoverage.targetBranchSha}...${sha}`;
         const diff = totalCoverage - previousCoverage.coverage;
         const diffRounded = diff.toFixed(2);
-        const sign = diff > 0 ? '+' : '-';
+        const sign = diff > 0 ? '+' : '';
         diffMessage = `This pull request changes total coverage ${sign}${diffRounded}% (${previousCoverage.coverage.toFixed(2)}% -> ${totalCoverage.toFixed(2)}%) for this [diff](${compareUrl})`;
       } else {
         diffMessage = `Total coverage: ${totalCoverage.toFixed(2)}%`;
